@@ -1,6 +1,6 @@
 {
   "name": "openchamber-podman",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Podman extension for OpenChamber — manage containers, view logs, inspect resources, and exec commands.",
   "license": "MIT",
   "type": "module",
