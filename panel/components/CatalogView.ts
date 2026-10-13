@@ -154,7 +154,7 @@ export const renderSystemView = (
 
   const summaryLabel = document.createElement('span');
   summaryLabel.className = 'docker-section-label';
-  summaryLabel.textContent = 'Total Docker Storage';
+  summaryLabel.textContent = 'Total Podman Storage';
 
   const summaryBadge = document.createElement('span');
   summaryBadge.className = 'docker-section-count';

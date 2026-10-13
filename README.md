@@ -1,73 +1,45 @@
-# Docker extension for OpenChamber
+# Podman extension for OpenChamber
 
-A comprehensive OpenChamber GUI panel to inspect and manage Docker containers, Docker Compose stacks, images, volumes, networks, and system storage.
+An OpenChamber panel for inspecting and managing Podman containers, Compose stacks, images, volumes, networks, and storage. It shells out only to the `podman` CLI through OpenChamber's host execution permission.
 
-It shells out to the `docker` binary on PATH using host execution permissions (`permissions.exec`).
-
-![Docker Panel Overview](assets/overview.png)
+This project is a Podman port of the MIT-licensed [OpenChamber Docker extension](https://github.com/openchamber/openchamber-extension-docker), with its original interface and Git history retained.
 
 ## Features
 
-### Containers & Docker Compose
-- **Container Lifecycle Management**: Start, stop, restart, pause, unpause, and force-remove containers.
-- **Compose Project Grouping**: Automatic visual grouping of containers by Docker Compose project with project-level batch controls (start, stop, restart project).
-- **Live Resource Usage**: Compact real-time CPU and RAM metrics for running containers (e.g. `CPU 1.2% · RAM 185MB`).
-- **Port Forwarding**: One-click opening of exposed container host ports.
-- **Multi-Select & Bulk Actions**: Select multiple containers for simultaneous start, stop, restart, or removal operations.
-- **Status Filters**: Quick filtering by `All`, `Running`, or `Stopped` status.
-
-### Inspection & Debugging
-- **Real-Time Logs Viewer**: Stream container logs with syntax highlighting for log levels (INFO, WARN, ERR, timestamps, JSON keys), search filtering, line wrapping, line numbers, and auto-scroll toggles.
-- **Interactive Container Shell Exec**: Execute custom shell commands (`sh`, `bash`, `ls`, `env`, etc.) inside running containers with preset quick shortcuts and output history.
-- **Container File System Browser**: Explore container directory trees, list file permissions and sizes, and preview text file contents directly inside the panel.
-- **Resource Inspector**: Searchable JSON and key-value metadata view for inspect objects across containers, images, volumes, and networks.
-
-### Storage & System Management
-- **Image Management**: View local images with repository tags, IDs, size, and creation date, with support for deleting dangling or unused images.
-- **Volume Management**: List Docker volumes, driver details, and prune unused storage volumes.
-- **Network Inspector**: Browse Docker networks (bridge, host, overlay, macvlan), view network drivers, scopes, and attached containers.
-- **System Usage Dashboard**: View overall Docker storage breakdown (`docker system df`), estimate reclaimable disk space, and execute one-click pruning for containers, images, volumes, and build cache.
-
-## Screenshots
-
-| Overview & Containers | Logs Viewer |
-| --- | --- |
-| ![Containers View](assets/containers.png) | ![Logs Viewer](assets/logs.png) |
-
-| File System Browser | Exec & Inspector |
-| --- | --- |
-| ![File System Browser](assets/filesystem.png) | ![Exec & Inspector](assets/exec.png) |
+- List running and stopped containers, inspect metadata, and view live resource usage.
+- Start, stop, restart, pause, unpause, and remove containers.
+- View and search container logs, execute shell commands, and browse container files.
+- Open published TCP host ports with one click.
+- Group Compose containers using Podman or Docker Compose project labels.
+- Inspect and manage images, volumes, networks, and Podman storage.
 
 ## Prerequisites
 
-- `docker` CLI installed and accessible on PATH.
-- OpenChamber version 1.22.0 or higher.
+- OpenChamber 1.22.0 or newer.
+- The `podman` CLI available on `PATH`.
+- On macOS, a running Podman machine (`podman machine start`).
+- Optional: a Compose provider available to `podman compose` for Compose-managed workloads. Containers still appear normally when no provider is installed.
 
 ## Installation
 
-### Option 1: Install from release archive (.zip)
+### Release archive
 
-1. Download `docker-extension.zip` from the latest [GitHub Release](https://github.com/openchamber/openchamber-extension-docker/releases).
-2. In OpenChamber, open Settings -> Extensions -> Add Extension.
-3. Select the downloaded `.zip` archive or extracted directory.
-4. Allow local agent execution when prompted.
+1. Download or build `podman-extension.zip`.
+2. In OpenChamber, open **Settings → Extensions → Add Extension**.
+3. Select the zip archive (or this extracted repository directory).
+4. Approve local agent execution when prompted. The extension requests permission to execute only `podman`.
 
-### Option 2: Install from Git repository
+### Local checkout
 
-1. In OpenChamber, open Settings -> Extensions -> Add Extension.
-2. Provide the Git repository URL:
-   `https://github.com/openchamber/openchamber-extension-docker.git`
-   *(Or clone the repository locally and select the folder).*
-3. Allow local agent execution when prompted.
+Clone this repository, run `bun install && bun run bundle`, then select the repository folder from **Settings → Extensions → Add Extension**.
 
 ## Development
 
-If you are modifying the extension source code:
-
-- `bun run bundle`: Bundles `panel/main.ts` into `panel/main.js`.
-- `bun run type-check`: Runs TypeScript type checking without emitting files.
-- `bun run pack`: Creates `docker-extension.zip` archive ready for distribution.
+- `bun install` installs dependencies.
+- `bun run type-check` checks the TypeScript panel.
+- `bun run bundle` rebuilds `panel/main.js`.
+- `bun run pack` creates `podman-extension.zip`.
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).

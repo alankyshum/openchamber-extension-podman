@@ -725,7 +725,7 @@ const askLogsInChat = async (): Promise<void> => {
   const rawText = logsView.text.trim();
   const trimmed = rawText.length > maxLen ? rawText.slice(-maxLen) : rawText;
   const containerName = logsContainer?.names.replace(/^\//, '') || 'container';
-  const promptText = `Analyze these Docker logs for container "${containerName}":\n\n\`\`\`log\n${trimmed}\n\`\`\``;
+  const promptText = `Analyze these Podman logs for container "${containerName}":\n\n\`\`\`log\n${trimmed}\n\`\`\``;
 
   try {
     await host.compose({ text: promptText });
@@ -866,7 +866,7 @@ const systemPrune = async (): Promise<void> => {
   systemPruneBusy = true;
   paint();
   try {
-    void host.toast({ kind: 'info', message: 'Pruning unused Docker system resources...' });
+    void host.toast({ kind: 'info', message: 'Pruning unused Podman system resources...' });
     const res = await host.serviceRequest({
       method: 'POST',
       path: '/system/prune',
@@ -956,11 +956,11 @@ const buildAppSkeleton = (): void => {
 
   const title = document.createElement('h1');
   title.className = 'docker-title';
-  title.textContent = 'Docker';
+  title.textContent = 'Podman';
 
   subtitleEl = document.createElement('p');
   subtitleEl.className = 'docker-subtitle';
-  subtitleEl.textContent = 'Loading Docker environment...';
+  subtitleEl.textContent = 'Loading Podman environment...';
 
   titleBlock.appendChild(title);
   titleBlock.appendChild(subtitleEl);
@@ -1116,7 +1116,7 @@ const renderCatalogView = (): HTMLElement => {
     if (composeMap.size === 0) {
       mountEmpty(container, {
         title: 'No Compose Stacks Found',
-        body: q ? `No Compose projects match "${q}".` : 'No Docker Compose stacks currently running.',
+        body: q ? `No Compose projects match "${q}".` : 'No Podman Compose stacks currently running.',
       });
       return container;
     }
@@ -1522,7 +1522,7 @@ const paint = (): void => {
           async () => {
             if (!execContainer) return;
             const name = execContainer.names.replace(/^\//, '') || execContainer.id;
-            const cmd = `docker exec -it ${name} sh`;
+            const cmd = `podman exec -it ${name} sh`;
             try {
               await host.writeClipboard(cmd);
               void host.toast({ kind: 'success', message: `Copied "${cmd}" to clipboard` });
@@ -1630,7 +1630,7 @@ const paint = (): void => {
       bodyEl.appendChild(renderCatalogView());
     }
   } catch (err) {
-    console.error('Docker panel paint error:', err);
+    console.error('Podman panel paint error:', err);
     if (bodyEl) {
       bodyEl.innerHTML = `<div style="padding: 12px; color: #e11d48;">Render error: ${err instanceof Error ? err.message : String(err)}</div>`;
     }

@@ -30,13 +30,13 @@ const readBody = (req) => new Promise((resolve, reject) => {
   req.on('error', reject);
 });
 
-const docker = async (args, { maxBuffer = 2 * 1024 * 1024, timeout = 15_000 } = {}) => {
-  const { stdout } = await execFileAsync('docker', args, { maxBuffer, timeout, encoding: 'utf8' });
+const podman = async (args, { maxBuffer = 2 * 1024 * 1024, timeout = 15_000 } = {}) => {
+  const { stdout } = await execFileAsync('podman', args, { maxBuffer, timeout, encoding: 'utf8' });
   return stdout;
 };
 
-const dockerBuffer = async (args, { maxBuffer = 2 * 1024 * 1024, timeout = 15_000 } = {}) => {
-  const { stdout } = await execFileAsync('docker', args, {
+const podmanBuffer = async (args, { maxBuffer = 2 * 1024 * 1024, timeout = 15_000 } = {}) => {
+  const { stdout } = await execFileAsync('podman', args, {
     maxBuffer,
     timeout,
     encoding: 'buffer',
@@ -44,9 +44,9 @@ const dockerBuffer = async (args, { maxBuffer = 2 * 1024 * 1024, timeout = 15_00
   return stdout;
 };
 
-const parseJsonLines = (stdout) => {
-  const lines = stdout.trim().split('\n').filter(Boolean);
-  return lines.map((line) => JSON.parse(line));
+const parseJsonArray = (stdout) => {
+  const value = JSON.parse(stdout || '[]');
+  return Array.isArray(value) ? value : [];
 };
 
 const chunk = (items, size) => {
@@ -114,7 +114,7 @@ const publishedPorts = (info) => {
         continue;
       }
       const hostIp = String(binding.HostIp || '0.0.0.0').trim() || '0.0.0.0';
-      // Docker often publishes the same port on 0.0.0.0 and :: — one chip is enough.
+      // Podman often publishes the same port on 0.0.0.0 and :: — one chip is enough.
       const dedupeKey = `${hostPort}|${containerPort}|${protocol}`;
       const openHost = hostIp === '0.0.0.0' || hostIp === '::' || hostIp === ''
         ? '127.0.0.1'
@@ -142,17 +142,53 @@ const publishedPorts = (info) => {
   return [...byKey.values()].sort((left, right) => Number(left.hostPort) - Number(right.hostPort));
 };
 
+const publishedPortsFromPs = (ports) => {
+  if (!Array.isArray(ports)) {
+    return [];
+  }
+  const mapped = [];
+  for (const port of ports) {
+    const hostPort = Number(port?.host_port || 0);
+    const containerPort = Number(port?.container_port || 0);
+    const protocol = String(port?.protocol || 'tcp');
+    const range = Math.max(1, Number(port?.range || 1));
+    if (!hostPort || !containerPort) {
+      continue;
+    }
+    const hostIp = String(port?.host_ip || '0.0.0.0') || '0.0.0.0';
+    const openHost = hostIp === '0.0.0.0' || hostIp === '::' ? '127.0.0.1' : hostIp;
+    for (let offset = 0; offset < range; offset += 1) {
+      mapped.push({
+        hostIp,
+        hostPort: String(hostPort + offset),
+        containerPort: String(containerPort + offset),
+        protocol,
+        url: protocol === 'tcp' ? `http://${openHost}:${hostPort + offset}` : null,
+      });
+    }
+  }
+  return mapped.sort((left, right) => Number(left.hostPort) - Number(right.hostPort));
+};
+
 const composeFromLabels = (labels) => {
   if (!labels || typeof labels !== 'object') {
     return null;
   }
-  const project = String(labels['com.docker.compose.project'] || '').trim();
+  const project = String(
+    labels['io.podman.compose.project']
+      || labels['com.docker.compose.project']
+      || '',
+  ).trim();
   if (!project) {
     return null;
   }
   return {
     project,
-    service: String(labels['com.docker.compose.service'] || '').trim(),
+    service: String(
+      labels['io.podman.compose.service']
+        || labels['com.docker.compose.service']
+        || '',
+    ).trim(),
   };
 };
 
@@ -170,19 +206,19 @@ const healthFromInspect = (info) => {
 };
 
 const listContainers = async () => {
-  const rows = parseJsonLines(await docker([
+  const rows = parseJsonArray(await podman([
     'ps',
     '-a',
     '--format',
-    '{{json .}}',
+    'json',
   ]));
-  const ids = rows.map((row) => row.ID).filter(Boolean);
+  const ids = rows.map((row) => row.Id).filter(Boolean);
   const inspectByShort = new Map();
   for (const batch of chunk(ids, 40)) {
     if (batch.length === 0) {
       continue;
     }
-    const infos = JSON.parse(await docker(['inspect', ...batch]));
+    const infos = JSON.parse(await podman(['inspect', ...batch]));
     for (const info of infos) {
       inspectByShort.set(shortId(info.Id), info);
     }
@@ -190,17 +226,17 @@ const listContainers = async () => {
 
   const statsByShort = new Map();
   try {
-    const statsRows = parseJsonLines(await docker(
-      ['stats', '--no-stream', '--format', '{{json .}}'],
+    const statsRows = parseJsonArray(await podman(
+      ['stats', '--no-stream', '--format', 'json'],
       { timeout: 20_000 },
     ));
     for (const row of statsRows) {
-      const id = shortId(row.ID || row.Container);
+      const id = shortId(row.id);
       if (id) {
         statsByShort.set(id, {
-          cpu: String(row.CPUPerc || '').trim(),
-          mem: String(row.MemUsage || '').trim(),
-          memPerc: String(row.MemPerc || '').trim(),
+          cpu: String(row.cpu_percent || '').trim(),
+          mem: String(row.mem_usage || '').trim(),
+          memPerc: String(row.mem_percent || '').trim(),
         });
       }
     }
@@ -209,17 +245,18 @@ const listContainers = async () => {
   }
 
   return rows.map((row) => {
-    const info = findInspect(inspectByShort, row.ID);
-    const labels = info?.Config?.Labels ?? {};
-    const stats = statsByShort.get(shortId(row.ID)) ?? null;
+    const info = findInspect(inspectByShort, row.Id);
+    const labels = info?.Config?.Labels ?? row.Labels ?? {};
+    const stats = statsByShort.get(shortId(row.Id)) ?? null;
+    const inspectPorts = info ? publishedPorts(info) : [];
     return {
-      id: row.ID,
-      names: row.Names,
+      id: row.Id,
+      names: Array.isArray(row.Names) ? String(row.Names[0] || '') : String(row.Names || ''),
       image: row.Image,
       status: row.Status,
       state: row.State,
       health: info ? healthFromInspect(info) : null,
-      ports: info ? publishedPorts(info) : [],
+      ports: inspectPorts.length > 0 ? inspectPorts : publishedPortsFromPs(row.Ports),
       compose: composeFromLabels(labels),
       stats,
     };
@@ -227,11 +264,11 @@ const listContainers = async () => {
 };
 
 const collectUsedImageKeys = async () => {
-  const ids = (await docker(['ps', '-aq'])).trim().split('\n').filter(Boolean);
+  const ids = (await podman(['ps', '-aq'])).trim().split('\n').filter(Boolean);
   const used = new Set();
   for (const batch of chunk(ids, 40)) {
     if (batch.length === 0) continue;
-    const infos = JSON.parse(await docker(['inspect', ...batch]));
+    const infos = JSON.parse(await podman(['inspect', ...batch]));
     for (const info of infos) {
       if (info.Image) used.add(String(info.Image));
       if (info.ImageID) used.add(String(info.ImageID));
@@ -243,11 +280,11 @@ const collectUsedImageKeys = async () => {
 };
 
 const collectUsedVolumeNames = async () => {
-  const ids = (await docker(['ps', '-aq'])).trim().split('\n').filter(Boolean);
+  const ids = (await podman(['ps', '-aq'])).trim().split('\n').filter(Boolean);
   const used = new Set();
   for (const batch of chunk(ids, 40)) {
     if (batch.length === 0) continue;
-    const infos = JSON.parse(await docker(['inspect', ...batch]));
+    const infos = JSON.parse(await podman(['inspect', ...batch]));
     for (const info of infos) {
       for (const mount of info.Mounts || []) {
         if (mount?.Type === 'volume' && mount.Name) {
@@ -260,11 +297,11 @@ const collectUsedVolumeNames = async () => {
 };
 
 const collectUsedNetworkKeys = async () => {
-  const ids = (await docker(['ps', '-aq'])).trim().split('\n').filter(Boolean);
+  const ids = (await podman(['ps', '-aq'])).trim().split('\n').filter(Boolean);
   const used = new Set();
   for (const batch of chunk(ids, 40)) {
     if (batch.length === 0) continue;
-    const infos = JSON.parse(await docker(['inspect', ...batch]));
+    const infos = JSON.parse(await podman(['inspect', ...batch]));
     for (const info of infos) {
       const networks = info.NetworkSettings?.Networks;
       if (networks && typeof networks === 'object') {
@@ -279,15 +316,15 @@ const collectUsedNetworkKeys = async () => {
 };
 
 const listImages = async () => {
-  const rows = parseJsonLines(await docker([
+  const rows = parseJsonArray(await podman([
     'images',
     '--format',
-    '{{json .}}',
+    'json',
   ]));
   const used = await collectUsedImageKeys();
   const usedList = [...used];
   return rows.map((row) => {
-    const id = String(row.ID || '');
+    const id = String(row.Id || '');
     const repo = String(row.Repository || '');
     const tag = String(row.Tag || '');
     const ref = repo && tag && repo !== '<none>' && tag !== '<none>' ? `${repo}:${tag}` : '';
@@ -312,11 +349,11 @@ const listImages = async () => {
 };
 
 const listVolumes = async () => {
-  const rows = parseJsonLines(await docker([
+  const rows = parseJsonArray(await podman([
     'volume',
     'ls',
     '--format',
-    '{{json .}}',
+    'json',
   ]));
   const used = await collectUsedVolumeNames();
   return rows.map((row) => ({
@@ -329,26 +366,26 @@ const listVolumes = async () => {
 };
 
 const listNetworks = async () => {
-  const rows = parseJsonLines(await docker([
+  const rows = parseJsonArray(await podman([
     'network',
     'ls',
     '--format',
-    '{{json .}}',
+    'json',
   ]));
   const used = await collectUsedNetworkKeys();
   const usedList = [...used];
   return rows.map((row) => {
-    const id = String(row.ID || '');
-    const name = String(row.Name || '');
+    const id = String(row.id || '');
+    const name = String(row.name || '');
     const isUsed = used.has(name) || usedList.some((key) => {
       if (!id || !key) return false;
       return key === id || key.startsWith(id) || id.startsWith(key);
     });
     return {
-      id: row.ID,
-      name: row.Name,
-      driver: row.Driver,
-      scope: row.Scope ?? '',
+      id: row.id,
+      name: row.name,
+      driver: row.driver,
+      scope: row.scope ?? '',
       used: isUsed,
     };
   });
@@ -399,7 +436,7 @@ const getContainerInspect = async (id) => {
 };
 
 const inspectContainer = async (id) => {
-  const infos = JSON.parse(await docker(['inspect', id]));
+  const infos = JSON.parse(await podman(['inspect', id]));
   return infos[0] ?? null;
 };
 
@@ -453,13 +490,13 @@ const listContainerFs = async (id, pathValue) => {
 
   let stdout = '';
   try {
-    stdout = await docker(
+    stdout = await podman(
       ['exec', id, 'sh', '-c', script, 'sh', pathValue, String(FS_LIST_MAX)],
       { maxBuffer: 1 * 1024 * 1024, timeout: 12_000 },
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to list path.';
-    return { ok: false, status: 502, error: 'docker-failed', message };
+    return { ok: false, status: 502, error: 'podman-failed', message };
   }
 
   const lines = stdout.replace(/\r/g, '').split('\n').filter((line) => line.length > 0);
@@ -553,13 +590,13 @@ const readContainerFile = async (id, pathValue) => {
 
   let buffer;
   try {
-    buffer = await dockerBuffer(
+    buffer = await podmanBuffer(
       ['exec', id, 'sh', '-c', script, 'sh', pathValue, String(FS_FILE_MAX + 1)],
       { maxBuffer: FS_FILE_MAX + 64 * 1024, timeout: 12_000 },
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to read file.';
-    return { ok: false, status: 502, error: 'docker-failed', message };
+    return { ok: false, status: 502, error: 'podman-failed', message };
   }
 
   const marker = buffer.subarray(0, 32).toString('utf8');
@@ -611,7 +648,7 @@ const mergeAndSortLogs = (stdout = '', stderr = '') => {
   return lines.join('\n');
 };
 
-/** docker logs writes container stderr to process stderr — merge both. */
+/** podman logs writes container stderr to process stderr — merge both. */
 const readContainerLogs = async (id, tailRaw) => {
   const info = await inspectContainer(id);
   if (!info) {
@@ -624,7 +661,7 @@ const readContainerLogs = async (id, tailRaw) => {
 
   try {
     const { stdout, stderr } = await execFileAsync(
-      'docker',
+      'podman',
       ['logs', '--timestamps', '--tail', String(tail), id],
       {
         encoding: 'utf8',
@@ -644,7 +681,7 @@ const readContainerLogs = async (id, tailRaw) => {
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to read logs.';
-    return { ok: false, status: 502, error: 'docker-failed', message };
+    return { ok: false, status: 502, error: 'podman-failed', message };
   }
 };
 
@@ -654,7 +691,7 @@ const execInContainer = async (id, command) => {
     return { ok: false, status: 400, error: 'bad-cmd', message: 'Command is empty.' };
   }
   try {
-    const { stdout, stderr } = await execFileAsync('docker', ['exec', id, 'sh', '-c', cleanCmd], {
+    const { stdout, stderr } = await execFileAsync('podman', ['exec', id, 'sh', '-c', cleanCmd], {
       maxBuffer: 2 * 1024 * 1024,
       timeout: 30_000,
       encoding: 'utf8',
@@ -787,21 +824,35 @@ const server = http.createServer(async (req, res) => {
 
     const stopMatch = url.pathname.match(/^\/containers\/([^/]+)\/stop$/);
     if (req.method === 'POST' && stopMatch) {
-      await docker(['stop', decodeURIComponent(stopMatch[1])]);
+      await podman(['stop', decodeURIComponent(stopMatch[1])]);
       sendJson(res, 200, { ok: true });
       return;
     }
 
     const startMatch = url.pathname.match(/^\/containers\/([^/]+)\/start$/);
     if (req.method === 'POST' && startMatch) {
-      await docker(['start', decodeURIComponent(startMatch[1])]);
+      await podman(['start', decodeURIComponent(startMatch[1])]);
       sendJson(res, 200, { ok: true });
       return;
     }
 
     const restartMatch = url.pathname.match(/^\/containers\/([^/]+)\/restart$/);
     if (req.method === 'POST' && restartMatch) {
-      await docker(['restart', decodeURIComponent(restartMatch[1])]);
+      await podman(['restart', decodeURIComponent(restartMatch[1])]);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    const pauseMatch = url.pathname.match(/^\/containers\/([^/]+)\/pause$/);
+    if (req.method === 'POST' && pauseMatch) {
+      await podman(['pause', decodeURIComponent(pauseMatch[1])]);
+      sendJson(res, 200, { ok: true });
+      return;
+    }
+
+    const unpauseMatch = url.pathname.match(/^\/containers\/([^/]+)\/unpause$/);
+    if (req.method === 'POST' && unpauseMatch) {
+      await podman(['unpause', decodeURIComponent(unpauseMatch[1])]);
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -811,7 +862,7 @@ const server = http.createServer(async (req, res) => {
       const id = decodeURIComponent(removeContainerMatch[1]);
       const withVolumes = url.searchParams.get('volumes') === '1';
       const args = withVolumes ? ['rm', '-f', '-v', id] : ['rm', '-f', id];
-      await docker(args, { timeout: 60_000 });
+      await podman(args, { timeout: 60_000 });
       sendJson(res, 200, { ok: true });
       return;
     }
@@ -830,7 +881,7 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: 'bad-body', message: 'ids required.' });
         return;
       }
-      await docker(['stop', ...ids], { timeout: 120_000 });
+      await podman(['stop', ...ids], { timeout: 120_000 });
       sendJson(res, 200, { ok: true, count: ids.length });
       return;
     }
@@ -865,15 +916,21 @@ const server = http.createServer(async (req, res) => {
       }
       args.push(image);
 
-      const stdout = await docker(args, { timeout: 60_000 });
+      const stdout = await podman(args, { timeout: 60_000 });
       sendJson(res, 200, { ok: true, id: stdout.trim(), image });
       return;
     }
 
     if (req.method === 'GET' && url.pathname === '/system/df') {
       try {
-        const stdout = await docker(['system', 'df', '--format', '{{json .}}']);
-        const items = parseJsonLines(stdout);
+        const stdout = await podman(['system', 'df', '--format', 'json']);
+        const items = parseJsonArray(stdout).map((row) => ({
+          Type: String(row.Type || ''),
+          TotalCount: String(row.TotalCount ?? row.Total ?? ''),
+          Active: String(row.Active ?? ''),
+          Size: String(row.Size ?? ''),
+          Reclaimable: String(row.Reclaimable ?? ''),
+        }));
         sendJson(res, 200, { df: items });
       } catch (err) {
         sendJson(res, 500, { error: 'SYSTEM_DF_FAILED', message: String(err) });
@@ -882,7 +939,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === 'POST' && url.pathname === '/system/prune') {
-      const stdout = await docker(['system', 'prune', '-a', '-f'], { timeout: 120_000 });
+      const stdout = await podman(['system', 'prune', '-a', '-f'], { timeout: 120_000 });
       sendJson(res, 200, { ok: true, output: stdout.trim() });
       return;
     }
@@ -901,53 +958,53 @@ const server = http.createServer(async (req, res) => {
         sendJson(res, 400, { error: 'bad-ref', message: 'Image ref looks invalid.' });
         return;
       }
-      await docker(['pull', ref], { maxBuffer: 8 * 1024 * 1024, timeout: 300_000 });
+      await podman(['pull', ref], { maxBuffer: 8 * 1024 * 1024, timeout: 300_000 });
       sendJson(res, 200, { ok: true, ref });
       return;
     }
 
     if (req.method === 'POST' && url.pathname === '/containers/prune') {
-      const stdout = await docker(['container', 'prune', '-f'], { timeout: 120_000 });
+      const stdout = await podman(['container', 'prune', '-f'], { timeout: 120_000 });
       sendJson(res, 200, { ok: true, output: stdout.trim() });
       return;
     }
 
     if (req.method === 'POST' && url.pathname === '/images/prune') {
-      const stdout = await docker(['image', 'prune', '-a', '-f'], { timeout: 120_000 });
+      const stdout = await podman(['image', 'prune', '-a', '-f'], { timeout: 120_000 });
       sendJson(res, 200, { ok: true, output: stdout.trim() });
       return;
     }
 
     if (req.method === 'POST' && url.pathname === '/volumes/prune') {
-      const stdout = await docker(['volume', 'prune', '-f'], { timeout: 120_000 });
+      const stdout = await podman(['volume', 'prune', '-f'], { timeout: 120_000 });
       sendJson(res, 200, { ok: true, output: stdout.trim() });
       return;
     }
 
     if (req.method === 'POST' && url.pathname === '/builder/prune') {
-      const stdout = await docker(['builder', 'prune', '-a', '-f'], { timeout: 120_000 });
+      const stdout = await podman(['builder', 'prune', '-a', '-f'], { timeout: 120_000 });
       sendJson(res, 200, { ok: true, output: stdout.trim() });
       return;
     }
 
     const removeImageMatch = url.pathname.match(/^\/images\/([^/]+)\/remove$/);
     if (req.method === 'POST' && removeImageMatch) {
-      await docker(['rmi', decodeURIComponent(removeImageMatch[1])]);
+      await podman(['rmi', decodeURIComponent(removeImageMatch[1])]);
       sendJson(res, 200, { ok: true });
       return;
     }
 
     const removeVolumeMatch = url.pathname.match(/^\/volumes\/([^/]+)\/remove$/);
     if (req.method === 'POST' && removeVolumeMatch) {
-      await docker(['volume', 'rm', decodeURIComponent(removeVolumeMatch[1])]);
+      await podman(['volume', 'rm', decodeURIComponent(removeVolumeMatch[1])]);
       sendJson(res, 200, { ok: true });
       return;
     }
 
     sendJson(res, 404, { error: 'not-found' });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Docker command failed';
-    sendJson(res, 502, { error: 'docker-failed', message });
+    const message = error instanceof Error ? error.message : 'Podman command failed';
+    sendJson(res, 502, { error: 'podman-failed', message });
   } finally {
     void readBody(req).catch(() => {});
   }

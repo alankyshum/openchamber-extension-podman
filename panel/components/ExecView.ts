@@ -33,7 +33,7 @@ export const renderExecView = (
 
   if (onCopyTerminalCmd) {
     mountButton(toolbar, {
-      label: 'Copy docker exec',
+      label: 'Copy podman exec',
       variant: 'secondary',
       size: 'xs',
       onClick: onCopyTerminalCmd,
